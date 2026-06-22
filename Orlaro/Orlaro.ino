@@ -738,24 +738,26 @@ void parseServerResponse(const String& response) {
         return;
     }
 
-    // Validate required "status" field
-    if (!doc.containsKey("status")) {
-        Serial.println(F("[PARSE] ERROR: Missing 'status' field in response."));
-        g_serverCfg.valid = false;
-        return;
+    // API returns: { "fan_on": bool, "config": { "auto_mode", "threshold", "manual_fan_on" }, ... }
+    // The "status" field is not present in this API - removed that check.
+
+    // Parse top-level fan_on
+    g_serverCfg.fanOn = doc["fan_on"] | false;
+
+    // Parse nested config object fields with safe defaults
+    JsonObject config = doc["config"];
+    if (!config.isNull()) {
+        g_serverCfg.autoMode    = config["auto_mode"]    | true;
+        g_serverCfg.threshold   = config["threshold"]    | 35;
+        g_serverCfg.manualFanOn = config["manual_fan_on"] | false;
+    } else {
+        // Fallback if "config" key is missing
+        g_serverCfg.autoMode    = true;
+        g_serverCfg.threshold   = 35;
+        g_serverCfg.manualFanOn = false;
+        Serial.println(F("[PARSE] WARNING: 'config' object missing, using defaults."));
     }
 
-    String status = doc["status"].as<String>();
-    if (status != "success") {
-        Serial.print(F("[PARSE] WARNING: Server status: "));
-        Serial.println(status);
-    }
-
-    // Parse all configuration fields with defaults
-    g_serverCfg.fanOn        = doc["fan_on"]        | false;
-    g_serverCfg.autoMode     = doc["auto_mode"]     | true;
-    g_serverCfg.threshold    = doc["threshold"]     | 35;
-    g_serverCfg.manualFanOn  = doc["manual_fan_on"] | false;
     g_serverCfg.pollInterval = doc["poll_interval"] | 10;
     g_serverCfg.valid        = true;
 
