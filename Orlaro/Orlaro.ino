@@ -20,7 +20,7 @@
  *  | PMS5003 GND       | GND      | GND              |
  *  | PMS5003 TXD       | TX       | GPIO16 (RX2)     |
  *  | PMS5003 RXD       | RX       | GPIO17 (TX2)     |
- *  | Relay IN          | Signal   | GPIO23           |
+ *  | Relay IN          | Signal   | GPIO13           |
  *  | Relay VCC         | 5V       | 5V (VIN)         |
  *  | Relay GND         | GND      | GND              |
  *  | Status LED        | Anode    | GPIO2            |
@@ -82,6 +82,12 @@
 #include <WiFiManager.h>
 #include <ArduinoJson.h>
 
+#include <Wire.h>
+#include <U8g2lib.h>
+
+U8G2_SH1106_128X64_NONAME_F_HW_I2C u8g2(U8G2_R0, /* reset=*/ U8X8_PIN_NONE);
+
+
 // ============================================================================
 //  FIRMWARE METADATA
 // ============================================================================
@@ -93,7 +99,7 @@
 //  PIN DEFINITIONS
 // ============================================================================
 
-#define PIN_RELAY           23      // Relay control (fan ON/OFF)
+#define PIN_RELAY           13      // Relay control (fan ON/OFF)
 #define PIN_STATUS_LED      2       // Onboard status LED
 #define PMS_RX_PIN          16      // ESP32 RX2 <- PMS5003 TXD
 #define PMS_TX_PIN          17      // ESP32 TX2 -> PMS5003 RXD
@@ -130,6 +136,7 @@
 #define INTERVAL_TELEMETRY  10000   // Cloud upload interval
 #define INTERVAL_LED        100     // LED update interval
 #define INTERVAL_DIAG       5000    // Diagnostics print interval
+#define INTERVAL_DISPLAY    500     // OLED update interval
 
 // ============================================================================
 //  DATA STRUCTURES
@@ -196,6 +203,7 @@ unsigned long g_timerSensor     = 0;
 unsigned long g_timerTelemetry  = 0;
 unsigned long g_timerLED        = 0;
 unsigned long g_timerDiag       = 0;
+unsigned long g_timerDisplay    = 0;
 
 // -- LED Blink State Machine --
 unsigned long g_ledBlinkTimer   = 0;
@@ -234,6 +242,7 @@ void updateRelay();
 void updateStatusLED();
 
 void printDiagnostics();
+void updateDisplay();
 
 // ============================================================================
 //  SETUP
@@ -264,6 +273,16 @@ void setup() {
     Serial.println(F("============================================"));
     Serial.println();
 
+    // ---- Initialize OLED ----
+    // ESP32 default I2C pins: SDA = 21, SCL = 22
+    u8g2.begin();
+    u8g2.clearBuffer();
+    u8g2.setFont(u8g2_font_ncenB08_tr); // 8-pixel height font
+    u8g2.drawStr(0, 10, "ORLARO SYSTEM");
+    u8g2.drawStr(0, 25, "Initializing...");
+    u8g2.sendBuffer();
+    delay(1000);
+
     // ---- Record boot time ----
     g_bootTime = millis();
 
@@ -271,8 +290,8 @@ void setup() {
     pinMode(PIN_RELAY, OUTPUT);
     pinMode(PIN_STATUS_LED, OUTPUT);
 
-    // Ensure relay starts OFF (fan off)
-    digitalWrite(PIN_RELAY, LOW);
+    // Ensure relay starts OFF — active-LOW module: HIGH = relay OFF
+    digitalWrite(PIN_RELAY, HIGH);
     g_fanState = false;
     g_prevFanState = false;
 
@@ -291,6 +310,7 @@ void setup() {
     g_timerTelemetry  = now;
     g_timerLED        = now;
     g_timerDiag       = now;
+    g_timerDisplay    = now;
     g_ledBlinkTimer   = now;
 
     Serial.println(F("[INIT] All subsystems initialized."));
@@ -340,6 +360,12 @@ void loop() {
     if (now - g_timerDiag >= INTERVAL_DIAG) {
         g_timerDiag = now;
         printDiagnostics();
+    }
+
+    // ---- Display Update (every 500 ms) ----
+    if (now - g_timerDisplay >= INTERVAL_DISPLAY) {
+        g_timerDisplay = now;
+        updateDisplay();
     }
 }
 
@@ -402,6 +428,22 @@ void setupWiFi() {
         Serial.print(F("[WIFI] MAC: "));
         Serial.println(WiFi.macAddress());
         Serial.println(F("[WIFI] ==================================="));
+
+        // Show WiFi connected boot screen on OLED
+        u8g2.clearBuffer();
+        u8g2.setFont(u8g2_font_ncenB08_tr);
+        u8g2.drawStr(0, 10, "WiFi Connected!");
+        
+        u8g2.setCursor(0, 25);
+        u8g2.print(F("SSID: "));
+        u8g2.print(WiFi.SSID());
+        
+        u8g2.setCursor(0, 40);
+        u8g2.print(F("IP: "));
+        u8g2.print(WiFi.localIP());
+        
+        u8g2.sendBuffer();
+        delay(2000); // Boot screen for 2 seconds
     } else {
         g_wifiConnected = false;
         Serial.println(F("[WIFI] Failed to connect. Will retry in main loop."));
@@ -646,17 +688,17 @@ void sendTelemetry() {
     http.setTimeout(10000);  // 10 second timeout
 
     // ---- Build JSON Payload ----
+    // API contract: only send { "pm25": <float> }
+    // Sending extra fields (device_id, pm10, etc.) causes the server to
+    // misinterpret the request and return incorrect fan_on state.
     JsonDocument doc;
-    doc["device_id"] = DEVICE_ID;
 
     if (g_sensorOnline && g_pmsData.valid) {
-        doc["pm25"]          = g_pmsData.pm2_5;
-        doc["pm10"]          = g_pmsData.pm10;
-        doc["pm1"]           = g_pmsData.pm1_0;
-        doc["sensor_status"] = "online";
-        doc["firmware"]      = FIRMWARE_VERSION;
+        doc["pm25"] = (float)g_pmsData.pm2_5;
     } else {
-        doc["sensor_status"] = "offline";
+        // Send 0 when sensor is offline so the server can still respond
+        doc["pm25"] = 0.0f;
+        Serial.println(F("[CLOUD] WARNING: Sensor offline - sending pm25=0"));
     }
 
     String jsonPayload;
@@ -738,26 +780,26 @@ void parseServerResponse(const String& response) {
         return;
     }
 
-    // API returns: { "fan_on": bool, "config": { "auto_mode", "threshold", "manual_fan_on" }, ... }
-    // The "status" field is not present in this API - removed that check.
+    // API response format (flat, per official contract):
+    // { "status": "success", "fan_on": bool, "auto_mode": bool,
+    //   "threshold": float, "manual_fan_on": bool }
 
-    // Parse top-level fan_on
-    g_serverCfg.fanOn = doc["fan_on"] | false;
-
-    // Parse nested config object fields with safe defaults
-    JsonObject config = doc["config"];
-    if (!config.isNull()) {
-        g_serverCfg.autoMode    = config["auto_mode"]    | true;
-        g_serverCfg.threshold   = config["threshold"]    | 35;
-        g_serverCfg.manualFanOn = config["manual_fan_on"] | false;
+    // Soft-check status field - warn but do NOT abort; fan control must proceed.
+    if (doc.containsKey("status")) {
+        String status = doc["status"].as<String>();
+        if (status != "success") {
+            Serial.print(F("[PARSE] WARNING: Server status: "));
+            Serial.println(status);
+        }
     } else {
-        // Fallback if "config" key is missing
-        g_serverCfg.autoMode    = true;
-        g_serverCfg.threshold   = 35;
-        g_serverCfg.manualFanOn = false;
-        Serial.println(F("[PARSE] WARNING: 'config' object missing, using defaults."));
+        Serial.println(F("[PARSE] INFO: No 'status' field in response (continuing)."));
     }
 
+    // Parse all fields from root level (flat structure per API contract)
+    g_serverCfg.fanOn        = doc["fan_on"]        | false;
+    g_serverCfg.autoMode     = doc["auto_mode"]     | true;
+    g_serverCfg.threshold    = doc["threshold"]     | 35;
+    g_serverCfg.manualFanOn  = doc["manual_fan_on"] | false;
     g_serverCfg.pollInterval = doc["poll_interval"] | 10;
     g_serverCfg.valid        = true;
 
@@ -795,7 +837,8 @@ void updateRelay() {
 
     // Apply the state
     g_fanState = newFanState;
-    digitalWrite(PIN_RELAY, g_fanState ? HIGH : LOW);
+    // Relay module is active-LOW: LOW = relay ON, HIGH = relay OFF
+    digitalWrite(PIN_RELAY, g_fanState ? LOW : HIGH);
 
     // Detect and log state changes
     if (g_fanState != g_prevFanState) {
@@ -979,6 +1022,67 @@ void printDiagnostics() {
 
     Serial.println(F("└──────────────────────────────────────────┘"));
     Serial.println(F(""));
+}
+
+// ============================================================================
+//  OLED DISPLAY UPDATE
+// ============================================================================
+
+void updateDisplay() {
+    u8g2.clearBuffer();
+    u8g2.setFont(u8g2_font_ncenB08_tr);
+
+    if (!g_wifiConnected) {
+        u8g2.drawStr(0, 10, "WiFi Disconnected!");
+        u8g2.drawStr(0, 25, "Connect to AP:");
+        u8g2.drawStr(0, 35, "Orlaro_Setup");
+        u8g2.drawStr(0, 50, "Portal IP:");
+        u8g2.setCursor(0, 60);
+        u8g2.print(WiFi.softAPIP());
+    } else {
+        // Normal Display Mode
+        u8g2.drawStr(0, 10, "ORLARO AIR PURIFIER");
+        u8g2.drawLine(0, 12, 128, 12);
+
+        if (g_sensorOnline && g_pmsData.valid) {
+            u8g2.setCursor(0, 25);
+            u8g2.print(F("PM1.0: "));
+            u8g2.print(g_pmsData.pm1_0);
+            
+            u8g2.setCursor(64, 25);
+            u8g2.print(F("PM10: "));
+            u8g2.print(g_pmsData.pm10);
+            
+            u8g2.setCursor(0, 40);
+            u8g2.setFont(u8g2_font_ncenB14_tr); // larger font for PM2.5
+            u8g2.print(F("PM2.5: "));
+            u8g2.print(g_pmsData.pm2_5);
+            u8g2.setFont(u8g2_font_ncenB08_tr); // back to normal font
+            
+            // Air Quality Status based on PM2.5
+            u8g2.setCursor(0, 52);
+            u8g2.print(F("Status: "));
+            if (g_pmsData.pm2_5 <= 12) {
+                u8g2.print(F("GOOD"));
+            } else if (g_pmsData.pm2_5 <= 35) {
+                u8g2.print(F("MODERATE"));
+            } else {
+                u8g2.print(F("POOR"));
+            }
+        } else {
+            u8g2.drawStr(0, 25, "Sensor Offline/Wait");
+        }
+
+        // Fan Status
+        u8g2.setCursor(0, 64);
+        u8g2.print(F("Fan: "));
+        u8g2.print(g_fanState ? F("ON") : F("OFF"));
+        
+        // WiFi Status icon/text
+        u8g2.drawStr(100, 64, "WiFi");
+    }
+
+    u8g2.sendBuffer();
 }
 
 // ============================================================================

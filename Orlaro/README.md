@@ -67,8 +67,9 @@ Before you begin, make sure you have all the required components:
 | 2 | PMS5003 Air Quality Sensor | 1 | Small metal box with a fan inside and a ribbon cable |
 | 3 | PMS5003 Breakout Cable | 1 | Ribbon cable with colored wires at one end |
 | 4 | Relay Module | 1 | Small board with a blue cube (the relay) on it |
-| 5 | USB Cable (Micro-USB or Type-C) | 1 | For powering the ESP32 and uploading code |
-| 6 | Jumper Wires | Several | Colored wires for connecting components |
+| 5 | 1.3-inch OLED Display | 1 | Small screen module (I2C) to display live data |
+| 6 | USB Cable (Micro-USB or Type-C) | 1 | For powering the ESP32 and uploading code |
+| 7 | Jumper Wires | Several | Colored wires for connecting components |
 
 ### You will also need (not included):
 
@@ -115,6 +116,14 @@ The relay is like a remote-controlled light switch. When the ESP32 sends a signa
 
 **Important:** The relay can handle mains voltage (AC 220V/110V). If you are connecting mains-powered devices, **have a qualified electrician do the high-voltage wiring**.
 
+### 1.3-inch OLED Display (The Screen)
+
+The OLED screen acts as the primary visual dashboard for your Orlaro device. It provides real-time information without needing to check the cloud or serial monitor:
+- Displays current **PM1.0, PM2.5, and PM10** particle readings
+- Shows **Air Quality Status** (GOOD, MODERATE, POOR) based on standard EPA thresholds
+- Indicates the current **Fan/Relay state** and **WiFi connection**
+- Displays **setup instructions** and the connection portal IP when disconnected
+
 ---
 
 ## 🔌 Hardware Setup — Wiring Guide
@@ -141,6 +150,17 @@ Connect the components using jumper wires. Follow the table below **carefully**.
 | 5 | VCC | → | **5V** (or VIN) | 🔴 Red |
 | 6 | GND | → | **GND** | ⚫ Black |
 | 7 | IN (Signal) | → | **GPIO 23** | 🔵 Blue |
+
+### OLED Display → ESP32
+
+The OLED uses the I2C protocol, requiring only 4 wires.
+
+| Wire # | OLED Pin | Connect To | ESP32 Pin | Wire Color (typical) |
+|--------|-----------|-----------|-----------|---------------------|
+| 8 | VCC | → | **3.3V** | 🔴 Red |
+| 9 | GND | → | **GND** | ⚫ Black |
+| 10 | SCL (Clock) | → | **GPIO 22** | 🟡 Yellow |
+| 11 | SDA (Data) | → | **GPIO 21** | 🔵 Blue |
 
 ### Status LED
 
@@ -170,8 +190,15 @@ If your board doesn't have one, connect an LED:
    Relay Module     │                │    │
    ┌────────┐       │                │    │
    │ VCC ───│───────│── 5V ──────────┘    │
-   │ GND ───│───────│── GND              │
-   │ IN  ───│───────│── GPIO 23          │
+   │ GND ───│───────│── GND ─────────────┐│
+   │ IN  ───│───────│── GPIO 23          ││
+   └────────┘       │                    ││
+   OLED Display     │                    ││
+   ┌────────┐       │   3.3V ────────────┘│
+   │ VCC ───│───────│── 3.3V              │
+   │ GND ───│───────│── GND               │
+   │ SCL ───│───────│── GPIO 22 (SCL)     │
+   │ SDA ───│───────│── GPIO 21 (SDA)     │
    └────────┘       │                     │
                     │   GPIO 2 = LED 💡   │
                     └─────────────────────┘
@@ -221,6 +248,7 @@ Go to **Sketch** → **Include Library** → **Manage Libraries** and install:
 |-------------|--------|----------------|
 | **WiFiManager** | tzapu | Search "WiFiManager" — install the one by **tablatronix/tzapu** |
 | **ArduinoJson** | Benoit Blanchon | Search "ArduinoJson" — install version **7.x** |
+| **U8g2** | oliver | Search "U8g2" (library for monochrome displays) |
 
 ### Step 4: Open the Orlaro Code
 
@@ -414,6 +442,7 @@ These numbers tell you how many tiny particles are in the air:
 
 | Method | How |
 |--------|-----|
+| **OLED Dashboard** | Look directly at the 1.3-inch screen on the device |
 | **Serial Monitor** | Connect USB, open Arduino Serial Monitor at 115200 baud |
 | **Cloud Dashboard** | Visit the web dashboard (configured by your administrator) |
 | **Diagnostics Output** | Printed every 5 seconds on Serial Monitor |
@@ -802,6 +831,7 @@ A: Technically yes, but the continuous WiFi and sensor operation will drain batt
 | **RAM** | 520 KB SRAM |
 | **Flash** | 4 MB |
 | **WiFi** | 802.11 b/g/n, 2.4 GHz |
+| **Display** | 1.3-inch OLED (SH1106 / I2C) |
 | **Sensor** | Plantower PMS5003 |
 | **Measurement Range** | 0–500 µg/m³ |
 | **Measurement Resolution** | 1 µg/m³ |
